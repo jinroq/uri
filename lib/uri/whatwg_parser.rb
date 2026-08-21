@@ -179,8 +179,17 @@ module URI
 
       rest = normalize_backslashes(rest)
 
-      if rest.start_with?('//')
-        authority, path_and_query = split_authority(rest.delete_prefix('//'))
+      if scheme || rest.start_with?('//')
+        # A known special scheme (http/https) always tries to parse an
+        # authority, skipping any number (zero or more) of leading "/" --
+        # not just the canonical "//" -- per WHATWG's
+        # special_authority_slashes_state / special_authority_ignore_slashes_state.
+        # A scheme-less relative reference only does this for an
+        # explicit "//" (network-path reference); it keeps exactly one
+        # "/" of any further run as the start of the path, since that
+        # matching only happens at all because #split already confirmed
+        # this exact "//" prefix above.
+        authority, path_and_query = split_authority(scheme ? rest.sub(/\A\/*/, '') : rest.delete_prefix('//'))
         username, password, host_port = parse_userinfo(authority)
         empty_path_default = scheme ? '/' : ''
         path_and_query = empty_path_default if path_and_query.empty?

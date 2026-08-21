@@ -177,12 +177,6 @@ class URI::TestWHATWGParser < Test::Unit::TestCase
 
   # --- missing host ---
 
-  def test_split_raises_when_host_is_missing_with_path
-    assert_raise(URI::InvalidURIError) do
-      @parser.split("http:///foo")
-    end
-  end
-
   def test_split_raises_when_host_is_missing_with_no_path
     assert_raise(URI::InvalidURIError) do
       @parser.split("http://")
@@ -191,6 +185,32 @@ class URI::TestWHATWGParser < Test::Unit::TestCase
 
   def test_split_allows_empty_host_in_relative_network_path_reference
     assert_equal("", @parser.split("///foo")[2])
+  end
+
+  # --- authority parsing ignores how many leading "/" follow the scheme ---
+  #
+  # For a known special scheme (http/https), WHATWG always tries to parse
+  # an authority after the scheme, skipping any number (zero or more) of
+  # leading "/" first -- not just the canonical "//". So
+  # "http:///foo" has no missing host: the "///" is fully consumed and
+  # "foo" is read as the host, leaving no path.
+
+  def test_split_parses_authority_without_any_leading_slash
+    result = @parser.split("http:example.com/foo")
+    assert_equal("example.com", result[2])
+    assert_equal("/foo", result[5])
+  end
+
+  def test_split_parses_authority_with_a_single_leading_slash
+    result = @parser.split("http:/example.com/foo")
+    assert_equal("example.com", result[2])
+    assert_equal("/foo", result[5])
+  end
+
+  def test_split_parses_authority_after_extra_leading_slashes
+    result = @parser.split("http:///foo")
+    assert_equal("foo", result[2])
+    assert_equal("/", result[5])
   end
 
   def test_split_normalizes_missing_path_to_root
