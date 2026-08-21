@@ -64,6 +64,44 @@ class URI::TestWHATWGParser < Test::Unit::TestCase
     assert_equal("/foo/", @parser.split("http://example.com/foo/")[5])
   end
 
+  # --- dot-segment normalization (absolute URLs only) ---
+
+  def test_split_normalizes_single_dot_segment
+    assert_equal("/a/b", @parser.split("http://example.com/a/./b")[5])
+  end
+
+  def test_split_normalizes_double_dot_segment
+    assert_equal("/b", @parser.split("http://example.com/a/../b")[5])
+  end
+
+  def test_split_normalizes_trailing_single_dot_segment
+    assert_equal("/a/b/", @parser.split("http://example.com/a/b/.")[5])
+  end
+
+  def test_split_normalizes_trailing_double_dot_segment
+    assert_equal("/a/", @parser.split("http://example.com/a/b/..")[5])
+  end
+
+  def test_split_normalizes_double_dot_segment_beyond_root
+    assert_equal("/a", @parser.split("http://example.com/../a")[5])
+  end
+
+  def test_split_normalizes_multiple_double_dot_segments
+    assert_equal("/c", @parser.split("http://example.com/a/b/../../c")[5])
+  end
+
+  def test_split_normalizes_lone_double_dot_path
+    assert_equal("/", @parser.split("http://example.com/..")[5])
+  end
+
+  def test_split_normalizes_lone_single_dot_path
+    assert_equal("/", @parser.split("http://example.com/.")[5])
+  end
+
+  def test_split_does_not_normalize_dot_segments_in_relative_reference
+    assert_equal("../foo", @parser.split("../foo")[5])
+  end
+
   # --- port ---
 
   def test_split_returns_nil_port_when_omitted

@@ -57,6 +57,7 @@ module URI
         host_port, path_and_query = split_host_port_and_path(host_port_path, empty_path_default)
         host, port = parse_host_port(host_port, scheme)
         path, query = parse_query(path_and_query)
+        path = normalize_dot_segments(path) if scheme
         userinfo = join_userinfo(username, password)
       else
         host = nil
@@ -144,6 +145,31 @@ module URI
       end
 
       port
+    end
+
+    # path state: resolves "." and ".." segments within a single absolute
+    # path, e.g. "/a/../b" -> "/b". A ".."  with no preceding segment left
+    # to cancel is simply dropped (can't go above the root). A trailing "."
+    # or ".." leaves a trailing slash, matching WHATWG path shortening.
+    def normalize_dot_segments(path)
+      segments = path.split('/', -1)
+      segments.shift # the leading "" before the path's first "/"
+
+      normalized = []
+      segments.each_with_index do |segment, index|
+        last = index == segments.size - 1
+        case segment
+        when '.'
+          normalized << '' if last
+        when '..'
+          normalized.pop
+          normalized << '' if last
+        else
+          normalized << segment
+        end
+      end
+
+      "/#{normalized.join('/')}"
     end
 
     # query state: everything after the first "?" (before any fragment).
