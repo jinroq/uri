@@ -1,13 +1,14 @@
 # frozen_string_literal: true
 
+require 'ipaddr'
 require_relative 'common'
 
 module URI
   # A parser for the WHATWG URL Standard (https://url.spec.whatwg.org/).
   #
-  # Phase 1: limited to absolute http/https URLs. It does not yet implement
-  # base URL resolution, IDNA/IPv6 host parsing, dot-segment path
-  # normalization, or percent-encoding.
+  # Limited to the http/https schemes. IPv6 host addresses are validated
+  # but not normalized to compressed form. IDNA (Unicode host) conversion
+  # and percent-encoding are not implemented.
   class WHATWG_Parser # :nodoc:
     SPECIAL_SCHEME_DEFAULT_PORTS = {
       'http' => 80,
@@ -136,8 +137,7 @@ module URI
 
     # A "[...]"-bracketed IPv6 address may itself contain colons, so it
     # must be kept together instead of splitting host:port on the first
-    # colon. Everything within the brackets is treated as opaque here;
-    # validating and normalizing the address itself is not yet implemented.
+    # colon.
     def split_host_and_port(host_port)
       return host_port.split(':', 2) unless host_port.start_with?('[')
 
@@ -145,6 +145,8 @@ module URI
       unless close_bracket_index
         raise InvalidURIError, "invalid IPv6 address: #{host_port}"
       end
+
+      validate_ipv6_address(host_port[1...close_bracket_index])
 
       host = host_port[0..close_bracket_index]
       case host_port[(close_bracket_index + 1)..-1]
@@ -155,6 +157,14 @@ module URI
       else
         raise InvalidURIError, "invalid host: #{host_port}"
       end
+    end
+
+    # The address's syntax is validated via IPAddr, but not normalized to
+    # compressed form (e.g. "0:0:0:0:0:0:0:1" is kept as-is, not "::1").
+    def validate_ipv6_address(address)
+      raise InvalidURIError, "invalid IPv6 address: #{address}" unless IPAddr.new(address).ipv6?
+    rescue IPAddr::Error
+      raise InvalidURIError, "invalid IPv6 address: #{address}"
     end
 
     def parse_port(port_str)

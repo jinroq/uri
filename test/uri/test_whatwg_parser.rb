@@ -152,6 +152,30 @@ class URI::TestWHATWGParser < Test::Unit::TestCase
     end
   end
 
+  def test_split_raises_for_non_ipv6_text_in_brackets
+    assert_raise(URI::InvalidURIError) do
+      @parser.split("http://[not-an-ipv6]/foo")
+    end
+  end
+
+  def test_split_raises_for_ipv4_address_in_brackets
+    assert_raise(URI::InvalidURIError) do
+      @parser.split("http://[1.2.3.4]/foo")
+    end
+  end
+
+  def test_split_raises_for_ipv6_with_multiple_double_colons
+    assert_raise(URI::InvalidURIError) do
+      @parser.split("http://[::1::2]/foo")
+    end
+  end
+
+  def test_split_raises_for_empty_brackets
+    assert_raise(URI::InvalidURIError) do
+      @parser.split("http://[]/foo")
+    end
+  end
+
   # --- port ---
 
   def test_split_returns_nil_port_when_omitted
