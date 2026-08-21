@@ -175,6 +175,24 @@ class URI::TestWHATWGParser < Test::Unit::TestCase
     end
   end
 
+  # --- missing host ---
+
+  def test_split_raises_when_host_is_missing_with_path
+    assert_raise(URI::InvalidURIError) do
+      @parser.split("http:///foo")
+    end
+  end
+
+  def test_split_raises_when_host_is_missing_with_no_path
+    assert_raise(URI::InvalidURIError) do
+      @parser.split("http://")
+    end
+  end
+
+  def test_split_allows_empty_host_in_relative_network_path_reference
+    assert_equal("", @parser.split("///foo")[2])
+  end
+
   def test_split_normalizes_missing_path_to_root
     assert_equal("/", @parser.split("http://example.com")[5])
   end

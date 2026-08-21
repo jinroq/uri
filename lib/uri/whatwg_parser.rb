@@ -298,10 +298,17 @@ module URI
 
     # host state / port state. A trailing ":" with no digits after it
     # (e.g. "example.com:") means the port was omitted, not that it's
-    # invalid.
+    # invalid. An empty host (e.g. "http:///foo") is only an error for a
+    # known special scheme (http/https); a scheme-less relative
+    # network-path reference (e.g. "///foo") allows it, since whether
+    # it's actually invalid depends on the base URL's scheme, which
+    # #split doesn't have access to.
     def parse_host_port(host_port, scheme)
       host, port_str = split_host_and_port(host_port)
       host = normalize_domain(host) unless host.start_with?('[')
+      if host.empty? && SPECIAL_SCHEME_DEFAULT_PORTS.key?(scheme)
+        raise InvalidURIError, "host is missing"
+      end
       if port_str.nil? || port_str.empty?
         port = nil
       else
@@ -313,8 +320,10 @@ module URI
 
     # A "[...]"-bracketed IPv6 address may itself contain colons, so it
     # must be kept together instead of splitting host:port on the first
-    # colon.
+    # colon. Guards the empty-string case explicitly, since
+    # "".split(':', 2) is [], not ['', nil].
     def split_host_and_port(host_port)
+      return ['', nil] if host_port.empty?
       return host_port.split(':', 2) unless host_port.start_with?('[')
 
       close_bracket_index = host_port.index(']')
