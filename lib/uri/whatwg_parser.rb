@@ -97,6 +97,7 @@ module URI
     SCHEME_PATTERN = /\A[A-Za-z][A-Za-z0-9+\-.]*\z/
     PORT_PATTERN = /\A\d+\z/
     MAX_PORT = 65535
+    IPV4_LIKE_PATTERN = /\A\d{1,3}(\.\d{1,3}){3}\z/
 
     # WHATWG percent-encode sets (https://url.spec.whatwg.org/#percent-encoded-bytes).
     # http/https are special schemes, so the query set below is the
@@ -273,8 +274,14 @@ module URI
     end
 
     # Lowercases each dot-separated label, Punycode-encoding (with an
-    # "xn--" prefix) any label that isn't plain ASCII.
+    # "xn--" prefix) any label that isn't plain ASCII. A host with exactly
+    # four dot-separated all-digit labels is validated as IPv4 instead;
+    # WHATWG's fuller IPv4 grammar (octal/hex octets, fewer than four
+    # parts) is not implemented, so e.g. "1.2.3" is treated as an ordinary
+    # (non-IPv4) domain rather than rejected or expanded.
     def normalize_domain(host)
+      return normalize_ipv4_address(host) if IPV4_LIKE_PATTERN.match?(host)
+
       host.split('.', -1).map { |label| normalize_label(label) }.join('.')
     end
 
@@ -294,6 +301,18 @@ module URI
       ip.to_s
     rescue IPAddr::Error
       raise InvalidURIError, "invalid IPv6 address: #{address}"
+    end
+
+    # Validates the address via IPAddr. Rejects an octet above 255 (e.g.
+    # "256.0.0.1") and a zero-padded octet (e.g. "01.2.3.4"), since IPAddr
+    # treats a leading zero as ambiguous rather than as octal.
+    def normalize_ipv4_address(address)
+      ip = IPAddr.new(address)
+      raise InvalidURIError, "invalid IPv4 address: #{address}" unless ip.ipv4?
+
+      ip.to_s
+    rescue IPAddr::Error
+      raise InvalidURIError, "invalid IPv4 address: #{address}"
     end
 
     def parse_port(port_str)

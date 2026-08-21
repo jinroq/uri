@@ -215,6 +215,42 @@ class URI::TestWHATWGParser < Test::Unit::TestCase
     end
   end
 
+  # --- IPv4 host ---
+
+  def test_split_accepts_valid_ipv4_host
+    assert_equal("1.2.3.4", @parser.split("http://1.2.3.4/foo")[2])
+  end
+
+  def test_split_accepts_ipv4_host_minimum_octet_boundary
+    assert_equal("0.0.0.0", @parser.split("http://0.0.0.0/foo")[2])
+  end
+
+  def test_split_accepts_ipv4_host_maximum_octet_boundary
+    assert_equal("255.255.255.255", @parser.split("http://255.255.255.255/foo")[2])
+  end
+
+  def test_split_raises_for_ipv4_octet_above_maximum_boundary
+    assert_raise(URI::InvalidURIError) do
+      @parser.split("http://256.0.0.1/foo")
+    end
+  end
+
+  def test_split_raises_for_wildly_out_of_range_ipv4_octets
+    assert_raise(URI::InvalidURIError) do
+      @parser.split("http://999.999.999.999/foo")
+    end
+  end
+
+  def test_split_raises_for_zero_padded_ipv4_octet
+    assert_raise(URI::InvalidURIError) do
+      @parser.split("http://01.02.03.04/foo")
+    end
+  end
+
+  def test_split_does_not_treat_three_part_numeric_host_as_ipv4
+    assert_equal("1.2.3", @parser.split("http://1.2.3/foo")[2])
+  end
+
   # --- port ---
 
   def test_split_returns_nil_port_when_omitted
