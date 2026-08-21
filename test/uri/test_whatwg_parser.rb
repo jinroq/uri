@@ -309,6 +309,60 @@ class URI::TestWHATWGParser < Test::Unit::TestCase
     assert_equal("section?weird", fragment)
   end
 
+  # --- percent-encoding ---
+
+  def test_split_percent_encodes_space_in_path
+    assert_equal("/foo%20bar", @parser.split("http://example.com/foo bar")[5])
+  end
+
+  def test_split_percent_encodes_non_ascii_in_path
+    assert_equal("/%E6%97%A5%E6%9C%AC%E8%AA%9E", @parser.split("http://example.com/日本語")[5])
+  end
+
+  def test_split_percent_encodes_double_quote_in_path
+    assert_equal('/foo%22bar', @parser.split('http://example.com/foo"bar')[5])
+  end
+
+  def test_split_does_not_encode_unreserved_path_chars
+    assert_equal("/foo-bar_baz.qux~1", @parser.split("http://example.com/foo-bar_baz.qux~1")[5])
+  end
+
+  def test_split_preserves_existing_percent_escape_in_path
+    assert_equal("/foo%20bar", @parser.split("http://example.com/foo%20bar")[5])
+  end
+
+  def test_split_encodes_lone_percent_sign_in_path
+    assert_equal("/100%25off", @parser.split("http://example.com/100%off")[5])
+  end
+
+  def test_split_percent_encodes_non_ascii_in_query
+    assert_equal("q=%E6%97%A5%E6%9C%AC%E8%AA%9E", @parser.split("http://example.com/foo?q=日本語")[7])
+  end
+
+  def test_split_percent_encodes_single_quote_in_query
+    assert_equal("a=b%27c", @parser.split("http://example.com/foo?a=b'c")[7])
+  end
+
+  def test_split_percent_encodes_non_ascii_in_fragment
+    assert_equal("%E6%97%A5%E6%9C%AC%E8%AA%9E", @parser.split("http://example.com/foo#日本語")[8])
+  end
+
+  def test_split_percent_encodes_double_quote_in_fragment
+    assert_equal('foo%22bar', @parser.split('http://example.com/foo#foo"bar')[8])
+  end
+
+  def test_split_percent_encodes_backtick_in_fragment
+    assert_equal("foo%60bar", @parser.split("http://example.com/foo#foo`bar")[8])
+  end
+
+  def test_split_percent_encodes_special_char_in_userinfo
+    assert_equal("us%3Cer:pass", @parser.split("http://us<er:pass@example.com/")[1])
+  end
+
+  def test_split_percent_encodes_non_ascii_in_userinfo
+    assert_equal("%E6%97%A5:pass", @parser.split("http://日:pass@example.com/")[1])
+  end
+
   # --- registry / opaque (always nil for absolute http/https URLs) ---
 
   def test_split_returns_nil_registry

@@ -98,6 +98,15 @@ module URI
     PORT_PATTERN = /\A\d+\z/
     MAX_PORT = 65535
 
+    # WHATWG percent-encode sets (https://url.spec.whatwg.org/#percent-encoded-bytes).
+    # http/https are special schemes, so the query set below is the
+    # "special-query" set (it includes "'").
+    C0_CONTROL_PERCENT_ENCODE_SET = (0x00..0x1F).to_a.freeze
+    FRAGMENT_PERCENT_ENCODE_SET = (C0_CONTROL_PERCENT_ENCODE_SET + ' "<>`'.bytes).freeze
+    QUERY_PERCENT_ENCODE_SET = (C0_CONTROL_PERCENT_ENCODE_SET + %q{ "#<>'}.bytes).freeze
+    PATH_PERCENT_ENCODE_SET = (C0_CONTROL_PERCENT_ENCODE_SET + %q{ "#<>?^`{}}.bytes).freeze
+    USERINFO_PERCENT_ENCODE_SET = (PATH_PERCENT_ENCODE_SET + '/:;=@[\]|'.bytes).freeze
+
     def parse(uri) # :nodoc:
       URI.for(*self.split(uri), self)
     end
@@ -107,7 +116,7 @@ module URI
       uris.inject :merge
     end
 
-    # Delegates character-set validation to URI::RFC3986_Parser, since Phase 1
+    # Delegates character-set validation to URI::RFC3986_Parser: this parser
     # only replaces URL structure parsing (#split), not component syntax.
     def regexp
       RFC3986_PARSER.regexp
@@ -128,6 +137,7 @@ module URI
     # they are not resolvable on their own.
     def split(input)
       before_fragment, fragment = parse_fragment(input)
+      fragment = percent_encode(fragment, FRAGMENT_PERCENT_ENCODE_SET) if fragment
       scheme, rest = parse_scheme(before_fragment)
 
       if rest.start_with?('//')
@@ -137,13 +147,19 @@ module URI
         host_port, path_and_query = split_host_port_and_path(host_port_path, empty_path_default)
         host, port = parse_host_port(host_port, scheme)
         path, query = parse_query(path_and_query)
+        path = percent_encode(path, PATH_PERCENT_ENCODE_SET)
         path = normalize_dot_segments(path) if scheme
+        query = percent_encode(query, QUERY_PERCENT_ENCODE_SET) if query
+        username = percent_encode(username, USERINFO_PERCENT_ENCODE_SET) if username
+        password = percent_encode(password, USERINFO_PERCENT_ENCODE_SET) if password
         userinfo = join_userinfo(username, password)
       else
         host = nil
         port = nil
         userinfo = nil
         path, query = parse_query(rest)
+        path = percent_encode(path, PATH_PERCENT_ENCODE_SET)
+        query = percent_encode(query, QUERY_PERCENT_ENCODE_SET) if query
       end
 
       [scheme, userinfo, host, port, nil, path, nil, query, fragment]
@@ -188,6 +204,25 @@ module URI
       return username if password.nil?
 
       "#{username}:#{password}"
+    end
+
+    # UTF-8 percent-encodes each character in encode_set, plus any
+    # character above U+007E (per the WHATWG C0 control percent-encode
+    # set). An existing "%XX" escape is preserved as-is; a lone "%" not
+    # followed by two hex digits is encoded to "%25" rather than left
+    # bare, since Generic#query=/#fragment= raise on an invalid escape.
+    def percent_encode(str, encode_set)
+      str.gsub(/%[0-9A-Fa-f]{2}|./mu) do |match|
+        if match.start_with?('%') && match.length == 3
+          match
+        elsif match == '%'
+          '%25'
+        elsif match.ord > 0x7E || encode_set.include?(match.ord)
+          match.bytes.map { |b| format('%%%02X', b) }.join
+        else
+          match
+        end
+      end
     end
 
     # splits authority-rest into "host:port" and a path+query, using
