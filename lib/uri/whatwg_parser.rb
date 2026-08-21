@@ -146,9 +146,8 @@ module URI
         raise InvalidURIError, "invalid IPv6 address: #{host_port}"
       end
 
-      validate_ipv6_address(host_port[1...close_bracket_index])
-
-      host = host_port[0..close_bracket_index]
+      address = normalize_ipv6_address(host_port[1...close_bracket_index])
+      host = "[#{address}]"
       case host_port[(close_bracket_index + 1)..-1]
       when ''
         [host, nil]
@@ -159,10 +158,13 @@ module URI
       end
     end
 
-    # The address's syntax is validated via IPAddr, but not normalized to
-    # compressed form (e.g. "0:0:0:0:0:0:0:1" is kept as-is, not "::1").
-    def validate_ipv6_address(address)
-      raise InvalidURIError, "invalid IPv6 address: #{address}" unless IPAddr.new(address).ipv6?
+    # Validates the address via IPAddr and normalizes it to RFC 5952
+    # compressed form, e.g. "0:0:0:0:0:0:0:1" -> "::1".
+    def normalize_ipv6_address(address)
+      ip = IPAddr.new(address)
+      raise InvalidURIError, "invalid IPv6 address: #{address}" unless ip.ipv6?
+
+      ip.to_s
     rescue IPAddr::Error
       raise InvalidURIError, "invalid IPv6 address: #{address}"
     end

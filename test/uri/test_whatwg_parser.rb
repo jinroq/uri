@@ -134,6 +134,23 @@ class URI::TestWHATWGParser < Test::Unit::TestCase
     assert_equal("/", @parser.split("http://[::1]")[5])
   end
 
+  def test_split_compresses_fully_expanded_ipv6_host
+    assert_equal("[::1]", @parser.split("http://[0:0:0:0:0:0:0:1]/foo")[2])
+  end
+
+  def test_split_compresses_ipv6_host_with_leading_zeros
+    result = @parser.split("http://[2001:0db8:0000:0000:0000:0000:0000:0001]/foo")
+    assert_equal("[2001:db8::1]", result[2])
+  end
+
+  def test_split_compresses_only_the_longest_zero_run_in_ipv6_host
+    assert_equal("[0:0:1::1]", @parser.split("http://[0:0:1:0:0:0:0:1]/foo")[2])
+  end
+
+  def test_split_keeps_unspecified_ipv6_host_compressed
+    assert_equal("[::]", @parser.split("http://[0:0:0:0:0:0:0:0]/foo")[2])
+  end
+
   def test_split_raises_for_unclosed_ipv6_bracket
     assert_raise(URI::InvalidURIError) do
       @parser.split("http://[::1/foo")
