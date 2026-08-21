@@ -48,6 +48,28 @@ class URI::TestWHATWGParser < Test::Unit::TestCase
     assert_equal("example.com", @parser.split("http://EXAMPLE.COM")[2])
   end
 
+  # --- IDNA (Punycode) host encoding ---
+
+  def test_split_encodes_japanese_host_to_punycode
+    assert_equal("xn--wgv71a119e.jp", @parser.split("http://日本語.jp/foo")[2])
+  end
+
+  def test_split_encodes_german_umlaut_host_to_punycode
+    assert_equal("xn--mnchen-3ya.de", @parser.split("http://münchen.de/foo")[2])
+  end
+
+  def test_split_encodes_only_non_ascii_labels_in_mixed_host
+    assert_equal("xn--wgv71a119e.example.com", @parser.split("http://日本語.example.com/foo")[2])
+  end
+
+  def test_split_lowercases_before_encoding_non_ascii_host
+    assert_equal("xn--mnchen-3ya.de", @parser.split("http://MÜNCHEN.de/foo")[2])
+  end
+
+  def test_split_does_not_encode_ipv6_host_as_punycode
+    assert_equal("[::1]", @parser.split("http://[::1]/foo")[2])
+  end
+
   def test_split_normalizes_missing_path_to_root
     assert_equal("/", @parser.split("http://example.com")[5])
   end

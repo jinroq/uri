@@ -6,10 +6,89 @@ require_relative 'common'
 module URI
   # A parser for the WHATWG URL Standard (https://url.spec.whatwg.org/).
   #
-  # Limited to the http/https schemes. IPv6 host addresses are validated
-  # but not normalized to compressed form. IDNA (Unicode host) conversion
-  # and percent-encoding are not implemented.
+  # Limited to the http/https schemes. Percent-encoding is not implemented.
+  # Non-ASCII domain labels are Punycode-encoded (RFC 3492), but the fuller
+  # UTS #46 mapping/validation rules (case folding beyond ASCII, disallowed
+  # code points, combining marks, etc.) are not.
   class WHATWG_Parser # :nodoc:
+    # Punycode (RFC 3492): encodes a Unicode label's codepoints into the
+    # ASCII string used after the "xn--" prefix in an IDNA domain label.
+    module Punycode # :nodoc:
+      BASE = 36
+      TMIN = 1
+      TMAX = 26
+      SKEW = 38
+      DAMP = 700
+      INITIAL_BIAS = 72
+      INITIAL_N = 128
+
+      module_function
+
+      def encode(codepoints)
+        n = INITIAL_N
+        delta = 0
+        bias = INITIAL_BIAS
+        output = +''
+
+        basic = codepoints.select { |cp| cp < 0x80 }
+        basic.each { |cp| output << cp.chr }
+        h = b = basic.length
+
+        output << '-' if b > 0
+
+        while h < codepoints.length
+          m = codepoints.select { |cp| cp >= n }.min
+          delta += (m - n) * (h + 1)
+          n = m
+
+          codepoints.each do |c|
+            delta += 1 if c < n
+            next unless c == n
+
+            q = delta
+            k = BASE
+            loop do
+              t = if k <= bias
+                    TMIN
+                  elsif k >= bias + TMAX
+                    TMAX
+                  else
+                    k - bias
+                  end
+              break if q < t
+
+              output << encode_digit(t + (q - t) % (BASE - t))
+              q = (q - t) / (BASE - t)
+              k += BASE
+            end
+            output << encode_digit(q)
+            bias = adapt(delta, h + 1, h == b)
+            delta = 0
+            h += 1
+          end
+          delta += 1
+          n += 1
+        end
+
+        output
+      end
+
+      def encode_digit(d)
+        (d + 22 + (d < 26 ? 75 : 0)).chr
+      end
+
+      def adapt(delta, numpoints, first_time)
+        delta = first_time ? delta / DAMP : delta / 2
+        delta += delta / numpoints
+        k = 0
+        while delta > ((BASE - TMIN) * TMAX) / 2
+          delta /= (BASE - TMIN)
+          k += BASE
+        end
+        k + (BASE - TMIN + 1) * delta / (delta + SKEW)
+      end
+    end
+
     SPECIAL_SCHEME_DEFAULT_PORTS = {
       'http' => 80,
       'https' => 443,
@@ -125,7 +204,7 @@ module URI
     # host state / port state.
     def parse_host_port(host_port, scheme)
       host, port_str = split_host_and_port(host_port)
-      host = host.downcase
+      host = normalize_domain(host) unless host.start_with?('[')
       if port_str.nil?
         port = nil
       else
@@ -156,6 +235,19 @@ module URI
       else
         raise InvalidURIError, "invalid host: #{host_port}"
       end
+    end
+
+    # Lowercases each dot-separated label, Punycode-encoding (with an
+    # "xn--" prefix) any label that isn't plain ASCII.
+    def normalize_domain(host)
+      host.split('.', -1).map { |label| normalize_label(label) }.join('.')
+    end
+
+    def normalize_label(label)
+      label = label.downcase
+      return label if label.ascii_only?
+
+      "xn--#{Punycode.encode(label.codepoints)}"
     end
 
     # Validates the address via IPAddr and normalizes it to RFC 5952
