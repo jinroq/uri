@@ -123,7 +123,7 @@ module URI
 
     # host state / port state.
     def parse_host_port(host_port, scheme)
-      host, port_str = host_port.split(':', 2)
+      host, port_str = split_host_and_port(host_port)
       host = host.downcase
       if port_str.nil?
         port = nil
@@ -132,6 +132,29 @@ module URI
         port = port_number == SPECIAL_SCHEME_DEFAULT_PORTS[scheme] ? nil : port_str
       end
       [host, port]
+    end
+
+    # A "[...]"-bracketed IPv6 address may itself contain colons, so it
+    # must be kept together instead of splitting host:port on the first
+    # colon. Everything within the brackets is treated as opaque here;
+    # validating and normalizing the address itself is not yet implemented.
+    def split_host_and_port(host_port)
+      return host_port.split(':', 2) unless host_port.start_with?('[')
+
+      close_bracket_index = host_port.index(']')
+      unless close_bracket_index
+        raise InvalidURIError, "invalid IPv6 address: #{host_port}"
+      end
+
+      host = host_port[0..close_bracket_index]
+      case host_port[(close_bracket_index + 1)..-1]
+      when ''
+        [host, nil]
+      when /\A:(\d*)\z/
+        [host, $1]
+      else
+        raise InvalidURIError, "invalid host: #{host_port}"
+      end
     end
 
     def parse_port(port_str)

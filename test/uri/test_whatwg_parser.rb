@@ -102,6 +102,56 @@ class URI::TestWHATWGParser < Test::Unit::TestCase
     assert_equal("../foo", @parser.split("../foo")[5])
   end
 
+  # --- IPv6 host ---
+
+  def test_split_returns_bracketed_ipv6_host
+    assert_equal("[::1]", @parser.split("http://[::1]/foo")[2])
+  end
+
+  def test_split_returns_nil_port_for_ipv6_host_without_port
+    assert_nil(@parser.split("http://[::1]/foo")[3])
+  end
+
+  def test_split_returns_explicit_port_for_ipv6_host
+    result = @parser.split("http://[::1]:8080/foo")
+    assert_equal("[::1]", result[2])
+    assert_equal("8080", result[3])
+  end
+
+  def test_split_normalizes_default_port_to_nil_for_ipv6_host
+    assert_nil(@parser.split("http://[::1]:80/foo")[3])
+  end
+
+  def test_split_lowercases_ipv6_host
+    assert_equal("[2001:db8::1]", @parser.split("http://[2001:DB8::1]/foo")[2])
+  end
+
+  def test_split_keeps_path_for_ipv6_host
+    assert_equal("/foo/bar", @parser.split("http://[::1]/foo/bar")[5])
+  end
+
+  def test_split_normalizes_missing_path_to_root_for_ipv6_host
+    assert_equal("/", @parser.split("http://[::1]")[5])
+  end
+
+  def test_split_raises_for_unclosed_ipv6_bracket
+    assert_raise(URI::InvalidURIError) do
+      @parser.split("http://[::1/foo")
+    end
+  end
+
+  def test_split_raises_for_ipv6_host_with_missing_port_digits
+    assert_raise(URI::InvalidURIError) do
+      @parser.split("http://[::1]:/foo")
+    end
+  end
+
+  def test_split_raises_for_trailing_garbage_after_ipv6_bracket
+    assert_raise(URI::InvalidURIError) do
+      @parser.split("http://[::1]x/foo")
+    end
+  end
+
   # --- port ---
 
   def test_split_returns_nil_port_when_omitted
