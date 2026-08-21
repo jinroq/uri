@@ -99,6 +99,12 @@ module URI
     MAX_PORT = 65535
     IPV4_LIKE_PATTERN = /\A\d{1,3}(\.\d{1,3}){3}\z/
 
+    # WHATWG forbidden host code points (https://url.spec.whatwg.org/#forbidden-host-code-point),
+    # excluding "/", ":", "@", "#", "?", and "\", which never reach here:
+    # they're already consumed by fragment/authority/backslash handling
+    # before a host string is produced.
+    FORBIDDEN_HOST_PATTERN = /[\x00\t\n\r <>\[\]^|]/
+
     # WHATWG percent-encode sets (https://url.spec.whatwg.org/#percent-encoded-bytes).
     # http/https are special schemes, so the query set below is the
     # "special-query" set (it includes "'").
@@ -124,8 +130,8 @@ module URI
     end
 
     # Returns [scheme, userinfo, host, port, registry, path, opaque, query, fragment],
-    # matching the contract of URI::RFC3986_Parser#split. registry and opaque
-    # are always nil.
+    # matching the contract of URI::RFC3986_Parser#split. registry is
+    # always nil.
     #
     # An absolute http/https URL (with scheme) is parsed in full, with a
     # missing path normalized to "/". A scheme-less input is parsed as a
@@ -136,16 +142,26 @@ module URI
     # (RFC2396 5.2, step 2). Relative references are meant to be fed to
     # Generic#merge (via #parse / #join) to resolve against a base URL;
     # they are not resolvable on their own.
+    #
+    # A scheme other than http/https is treated as a minimal opaque URI
+    # (see #parse_scheme): opaque holds everything after the scheme
+    # (including any "?query"), and userinfo/host/port/path/query are nil.
     def split(input)
       before_fragment, fragment = parse_fragment(input)
       fragment = percent_encode(fragment, FRAGMENT_PERCENT_ENCODE_SET) if fragment
       scheme, rest = parse_scheme(before_fragment)
 
+      if scheme && !SPECIAL_SCHEME_DEFAULT_PORTS.key?(scheme)
+        return [scheme, nil, nil, nil, nil, nil, rest, nil, fragment]
+      end
+
+      rest = normalize_backslashes(rest)
+
       if rest.start_with?('//')
-        authority = rest.delete_prefix('//')
-        username, password, host_port_path = parse_userinfo(authority)
+        authority, path_and_query = split_authority(rest.delete_prefix('//'))
+        username, password, host_port = parse_userinfo(authority)
         empty_path_default = scheme ? '/' : ''
-        host_port, path_and_query = split_host_port_and_path(host_port_path, empty_path_default)
+        path_and_query = empty_path_default if path_and_query.empty?
         host, port = parse_host_port(host_port, scheme)
         path, query = parse_query(path_and_query)
         path = percent_encode(path, PATH_PERCENT_ENCODE_SET)
@@ -175,29 +191,36 @@ module URI
       [before, fragment]
     end
 
+    # WHATWG treats "\" the same as "/" within the authority and path of
+    # a special scheme (http/https here), for compatibility with how
+    # browsers tolerate it. This does not extend into the query string,
+    # so only the part before the first "?" is affected.
+    def normalize_backslashes(rest)
+      before_query, sep, query_part = rest.partition('?')
+      before_query = before_query.tr('\\', '/')
+      sep.empty? ? before_query : "#{before_query}?#{query_part}"
+    end
+
     # scheme start state / scheme state. Returns [nil, before_fragment]
     # unchanged when no valid scheme prefix is present, so the caller can
-    # fall back to relative-reference parsing.
+    # fall back to relative-reference parsing. A recognized but
+    # unsupported scheme (anything other than http/https) is still
+    # returned here; #split treats it as an opaque URI.
     def parse_scheme(before_fragment)
       scheme, sep, rest = before_fragment.partition(':')
       return [nil, before_fragment] if sep.empty? || !SCHEME_PATTERN.match?(scheme)
 
-      scheme = scheme.downcase
-      unless SPECIAL_SCHEME_DEFAULT_PORTS.key?(scheme)
-        raise InvalidURIError, "unsupported scheme: #{scheme}"
-      end
-
-      [scheme, rest]
+      [scheme.downcase, rest]
     end
 
     # authority state: username ":" password "@" up to the last "@".
     def parse_userinfo(authority)
-      userinfo_str, sep, host_port_path = authority.rpartition('@')
+      userinfo_str, sep, host_port = authority.rpartition('@')
       return [nil, nil, authority] if sep.empty?
 
       username, colon, password = userinfo_str.partition(':')
       password = nil if colon.empty?
-      [username, password, host_port_path]
+      [username, password, host_port]
     end
 
     def join_userinfo(username, password)
@@ -209,13 +232,14 @@ module URI
 
     # UTF-8 percent-encodes each character in encode_set, plus any
     # character above U+007E (per the WHATWG C0 control percent-encode
-    # set). An existing "%XX" escape is preserved as-is; a lone "%" not
-    # followed by two hex digits is encoded to "%25" rather than left
-    # bare, since Generic#query=/#fragment= raise on an invalid escape.
+    # set). An existing "%XX" escape is preserved but uppercased (WHATWG
+    # always emits uppercase hex digits); a lone "%" not followed by two
+    # hex digits is encoded to "%25" rather than left bare, since
+    # Generic#query=/#fragment= raise on an invalid escape.
     def percent_encode(str, encode_set)
       str.gsub(/%[0-9A-Fa-f]{2}|./mu) do |match|
         if match.start_with?('%') && match.length == 3
-          match
+          match.upcase
         elsif match == '%'
           '%25'
         elsif match.ord > 0x7E || encode_set.include?(match.ord)
@@ -226,22 +250,28 @@ module URI
       end
     end
 
-    # splits authority-rest into "host:port" and a path+query, using
-    # empty_path_default when no "/" (and thus no path) is present.
-    def split_host_port_and_path(host_port_path, empty_path_default)
-      slash_index = host_port_path.index('/')
-      if slash_index
-        [host_port_path[0...slash_index], host_port_path[slash_index..-1]]
+    # Splits "authority-and-rest" (everything after the "//") into the
+    # authority ("userinfo@host:port") and a path+query, which end at the
+    # first "/" or "?" -- whichever comes first. Neither may appear
+    # inside the authority: an early "?" (e.g. "example.com?q=1", no
+    # path) must not be swallowed into the host, and an "@" inside the
+    # path/query must not be mistaken for the userinfo delimiter.
+    def split_authority(authority_and_rest)
+      end_index = authority_and_rest.index(/[\/?]/)
+      if end_index
+        [authority_and_rest[0...end_index], authority_and_rest[end_index..-1]]
       else
-        [host_port_path, empty_path_default]
+        [authority_and_rest, '']
       end
     end
 
-    # host state / port state.
+    # host state / port state. A trailing ":" with no digits after it
+    # (e.g. "example.com:") means the port was omitted, not that it's
+    # invalid.
     def parse_host_port(host_port, scheme)
       host, port_str = split_host_and_port(host_port)
       host = normalize_domain(host) unless host.start_with?('[')
-      if port_str.nil?
+      if port_str.nil? || port_str.empty?
         port = nil
       else
         port_number = parse_port(port_str)
@@ -280,6 +310,7 @@ module URI
     # parts) is not implemented, so e.g. "1.2.3" is treated as an ordinary
     # (non-IPv4) domain rather than rejected or expanded.
     def normalize_domain(host)
+      raise InvalidURIError, "invalid host: #{host}" if FORBIDDEN_HOST_PATTERN.match?(host)
       return normalize_ipv4_address(host) if IPV4_LIKE_PATTERN.match?(host)
 
       host.split('.', -1).map { |label| normalize_label(label) }.join('.')
@@ -328,6 +359,12 @@ module URI
       port
     end
 
+    # A segment counts as a single/double dot segment whether written
+    # literally or percent-encoded (in either case), e.g. "%2e" and "%2E"
+    # both count as ".", so ".%2e" counts as "..".
+    SINGLE_DOT_SEGMENT_PATTERN = /\A(?:\.|%2e)\z/i
+    DOUBLE_DOT_SEGMENT_PATTERN = /\A(?:\.|%2e){2}\z/i
+
     # path state: resolves "." and ".." segments within a single absolute
     # path, e.g. "/a/../b" -> "/b". A ".."  with no preceding segment left
     # to cancel is simply dropped (can't go above the root). A trailing "."
@@ -339,11 +376,10 @@ module URI
       normalized = []
       segments.each_with_index do |segment, index|
         last = index == segments.size - 1
-        case segment
-        when '.'
-          normalized << '' if last
-        when '..'
+        if DOUBLE_DOT_SEGMENT_PATTERN.match?(segment)
           normalized.pop
+          normalized << '' if last
+        elsif SINGLE_DOT_SEGMENT_PATTERN.match?(segment)
           normalized << '' if last
         else
           normalized << segment

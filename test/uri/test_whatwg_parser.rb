@@ -3,15 +3,15 @@ require "test/unit"
 require "uri"
 require "uri/whatwg_parser"
 
-# Phase 1: absolute http/https URLs only.
-#
 # URI::WHATWG_Parser#split must return the same 9-element contract as
 # URI::RFC3986_Parser#split:
 #
 #   [scheme, userinfo, host, port, registry, path, opaque, query, fragment]
 #
 # so that URI.for(*parser.split(uri), parser) keeps working unmodified.
-# registry and opaque are always nil for absolute http/https URLs.
+# registry is always nil. Only http/https get full structural parsing;
+# any other scheme is a minimal opaque URI (see the "unsupported scheme"
+# section below).
 class URI::TestWHATWGParser < Test::Unit::TestCase
   def setup
     @parser = URI::WHATWG_Parser.new
@@ -38,10 +38,77 @@ class URI::TestWHATWGParser < Test::Unit::TestCase
     )
   end
 
+  # --- unsupported scheme (opaque) ---
+  #
+  # Only http/https get full structural parsing (authority, host, path
+  # segmentation, IDNA, percent-encoding). Any other scheme is treated as
+  # a minimal opaque URI (scheme + opaque part), matching how
+  # RFC3986_Parser#split handles e.g. "mailto:foo@example.org" via its
+  # path-rootless case. This keeps Generic#merge's "return rel if
+  # rel.absolute?" step (RFC2396 5.2) working for relative references
+  # whose first path segment contains a colon, e.g. resolving "foo:bar"
+  # against a base URL: RFC3986 doesn't allow a colon in the first
+  # segment of a relative-path reference, so it must be treated as an
+  # absolute URI instead of erroring out.
+
+  def test_split_treats_unsupported_scheme_as_opaque_uri
+    assert_equal(
+      ["foo", nil, nil, nil, nil, nil, "bar", nil, nil],
+      @parser.split("foo:bar")
+    )
+  end
+
+  def test_split_keeps_query_inside_opaque_part_for_unsupported_scheme
+    result = @parser.split("mailto:foo@example.org?subject=hi")
+    assert_equal("mailto", result[0])
+    assert_equal("foo@example.org?subject=hi", result[6])
+    assert_nil(result[7])
+  end
+
+  def test_split_returns_fragment_for_opaque_uri
+    assert_equal("frag", @parser.split("foo:bar#frag")[8])
+  end
+
+  def test_parse_returns_generic_for_unsupported_scheme
+    result = @parser.parse("foo:bar")
+    assert_instance_of(URI::Generic, result)
+    assert_equal("bar", result.opaque)
+  end
+
+  def test_join_resolves_opaque_absolute_uri_by_ignoring_base
+    base = @parser.parse("http://example.com/a/b")
+    result = @parser.join(base, "foo:bar")
+    assert_equal("foo:bar", result.to_s)
+  end
+
   # --- host & path ---
 
   def test_split_returns_host_for_simple_http_url
     assert_equal("example.com", @parser.split("http://example.com")[2])
+  end
+
+  # --- backslash as path separator (special scheme compatibility) ---
+  #
+  # WHATWG treats "\" the same as "/" within the authority and path of a
+  # special scheme (http/https here), for compatibility with how browsers
+  # tolerate it. This does not extend into the query string.
+
+  def test_split_treats_backslash_as_path_separator
+    assert_equal("/foo/bar", @parser.split("http://example.com/foo\\bar")[5])
+  end
+
+  def test_split_treats_backslash_authority_slashes
+    result = @parser.split("http:\\\\example.com\\foo")
+    assert_equal("example.com", result[2])
+    assert_equal("/foo", result[5])
+  end
+
+  def test_split_treats_backslash_as_separator_in_relative_reference
+    assert_equal("foo/bar", @parser.split("foo\\bar")[5])
+  end
+
+  def test_split_does_not_treat_backslash_in_query_as_separator
+    assert_equal('a=b\c', @parser.split("http://example.com/foo?a=b\\c")[7])
   end
 
   def test_split_lowercases_uppercase_host
@@ -68,6 +135,44 @@ class URI::TestWHATWGParser < Test::Unit::TestCase
 
   def test_split_does_not_encode_ipv6_host_as_punycode
     assert_equal("[::1]", @parser.split("http://[::1]/foo")[2])
+  end
+
+  # --- forbidden host code points ---
+
+  def test_split_raises_for_space_in_host
+    assert_raise(URI::InvalidURIError) do
+      @parser.split("http://exa mple.com/foo")
+    end
+  end
+
+  def test_split_raises_for_tab_in_host
+    assert_raise(URI::InvalidURIError) do
+      @parser.split("http://exa\tmple.com/foo")
+    end
+  end
+
+  def test_split_raises_for_angle_bracket_in_host
+    assert_raise(URI::InvalidURIError) do
+      @parser.split("http://exa<mple.com/foo")
+    end
+  end
+
+  def test_split_raises_for_square_bracket_in_unquoted_host
+    assert_raise(URI::InvalidURIError) do
+      @parser.split("http://exa]mple.com/foo")
+    end
+  end
+
+  def test_split_raises_for_pipe_in_host
+    assert_raise(URI::InvalidURIError) do
+      @parser.split("http://exa|mple.com/foo")
+    end
+  end
+
+  def test_split_raises_for_null_byte_in_host
+    assert_raise(URI::InvalidURIError) do
+      @parser.split("http://exa\x00mple.com/foo")
+    end
   end
 
   def test_split_normalizes_missing_path_to_root
@@ -118,6 +223,22 @@ class URI::TestWHATWGParser < Test::Unit::TestCase
 
   def test_split_normalizes_lone_single_dot_path
     assert_equal("/", @parser.split("http://example.com/.")[5])
+  end
+
+  def test_split_normalizes_percent_encoded_single_dot_segment
+    assert_equal("/a/b", @parser.split("http://example.com/a/%2e/b")[5])
+  end
+
+  def test_split_normalizes_percent_encoded_single_dot_segment_uppercase
+    assert_equal("/a/b", @parser.split("http://example.com/a/%2E/b")[5])
+  end
+
+  def test_split_normalizes_percent_encoded_double_dot_segment
+    assert_equal("/b", @parser.split("http://example.com/a/%2e%2e/b")[5])
+  end
+
+  def test_split_normalizes_mixed_literal_and_percent_encoded_double_dot_segment
+    assert_equal("/b", @parser.split("http://example.com/a/.%2e/b")[5])
   end
 
   def test_split_does_not_normalize_dot_segments_in_relative_reference
@@ -179,10 +300,8 @@ class URI::TestWHATWGParser < Test::Unit::TestCase
     end
   end
 
-  def test_split_raises_for_ipv6_host_with_missing_port_digits
-    assert_raise(URI::InvalidURIError) do
-      @parser.split("http://[::1]:/foo")
-    end
+  def test_split_returns_nil_port_for_ipv6_host_with_trailing_colon
+    assert_nil(@parser.split("http://[::1]:/foo")[3])
   end
 
   def test_split_raises_for_trailing_garbage_after_ipv6_bracket
@@ -289,6 +408,14 @@ class URI::TestWHATWGParser < Test::Unit::TestCase
     end
   end
 
+  def test_split_returns_nil_port_for_trailing_colon_with_no_digits
+    assert_nil(@parser.split("http://example.com:/foo")[3])
+  end
+
+  def test_split_returns_nil_port_for_trailing_colon_with_no_digits_and_no_path
+    assert_nil(@parser.split("http://example.com:")[3])
+  end
+
   # --- userinfo ---
 
   def test_split_returns_userinfo_when_user_and_password_present
@@ -301,6 +428,21 @@ class URI::TestWHATWGParser < Test::Unit::TestCase
 
   def test_split_returns_nil_userinfo_when_absent
     assert_nil(@parser.split("http://example.com/")[1])
+  end
+
+  # --- authority boundary (host must not swallow query/path text) ---
+
+  def test_split_stops_authority_at_query_delimiter_with_no_path
+    result = @parser.split("http://example.com?foo=bar")
+    assert_equal("example.com", result[2])
+    assert_equal("foo=bar", result[7])
+  end
+
+  def test_split_does_not_treat_at_sign_in_query_as_userinfo_delimiter
+    result = @parser.split("http://example.com/foo?a@b")
+    assert_nil(result[1])
+    assert_equal("example.com", result[2])
+    assert_equal("a@b", result[7])
   end
 
   # --- query ---
@@ -365,6 +507,14 @@ class URI::TestWHATWGParser < Test::Unit::TestCase
 
   def test_split_preserves_existing_percent_escape_in_path
     assert_equal("/foo%20bar", @parser.split("http://example.com/foo%20bar")[5])
+  end
+
+  def test_split_uppercases_existing_lowercase_percent_escape_in_path
+    assert_equal("/foo%2Fbar", @parser.split("http://example.com/foo%2fbar")[5])
+  end
+
+  def test_split_uppercases_existing_lowercase_percent_escape_in_query
+    assert_equal("a=%2F", @parser.split("http://example.com/foo?a=%2f")[7])
   end
 
   def test_split_encodes_lone_percent_sign_in_path
