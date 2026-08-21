@@ -31,10 +31,11 @@ class URI::TestWHATWGParser < Test::Unit::TestCase
     assert_equal("https", @parser.split("HtTpS://example.com")[0])
   end
 
-  def test_split_raises_when_scheme_is_missing
-    assert_raise(URI::InvalidURIError) do
+  def test_split_treats_scheme_less_relative_path_as_relative_reference
+    assert_equal(
+      [nil, nil, nil, nil, nil, "example.com/foo", nil, nil, nil],
       @parser.split("example.com/foo")
-    end
+    )
   end
 
   # --- host & path ---
@@ -214,12 +215,6 @@ class URI::TestWHATWGParser < Test::Unit::TestCase
     assert_equal(80, @parser.parse("http://example.com/").port)
   end
 
-  def test_parse_raises_for_missing_scheme
-    assert_raise(URI::InvalidURIError) do
-      @parser.parse("example.com/foo")
-    end
-  end
-
   # --- regexp ---
 
   def test_regexp_returns_a_hash
@@ -256,5 +251,90 @@ class URI::TestWHATWGParser < Test::Unit::TestCase
   def test_join_two_absolute_uris_returns_the_latter
     result = @parser.join("http://example.com/foo", "http://example.org/bar")
     assert_equal("http://example.org/bar", result.to_s)
+  end
+
+  # --- split: relative references (no scheme) ---
+  #
+  # These feed Generic#merge, which parses the second argument on its own
+  # (via parser.parse) and merges it against the base with the standard
+  # RFC2396 Section 5.2 algorithm. A missing path is left as "" here
+  # (not normalized to "/"), since Generic#merge treats an empty rel.path
+  # as "no path given" (RFC2396 5.2, step 2).
+
+  def test_split_treats_absolute_path_reference_as_relative_reference
+    assert_equal(
+      [nil, nil, nil, nil, nil, "/foo/bar", nil, nil, nil],
+      @parser.split("/foo/bar")
+    )
+  end
+
+  def test_split_treats_network_path_reference_as_relative_reference
+    assert_equal(
+      [nil, nil, "example.com", nil, nil, "/foo", nil, nil, nil],
+      @parser.split("//example.com/foo")
+    )
+  end
+
+  def test_split_relative_reference_with_query_only
+    assert_equal(
+      [nil, nil, nil, nil, nil, "", nil, "q=1", nil],
+      @parser.split("?q=1")
+    )
+  end
+
+  def test_split_relative_reference_with_fragment_only
+    assert_equal(
+      [nil, nil, nil, nil, nil, "", nil, nil, "frag"],
+      @parser.split("#frag")
+    )
+  end
+
+  def test_split_empty_relative_reference
+    assert_equal(
+      [nil, nil, nil, nil, nil, "", nil, nil, nil],
+      @parser.split("")
+    )
+  end
+
+  # --- parse: relative references become plain URI::Generic ---
+
+  def test_parse_returns_generic_instance_for_relative_reference
+    assert_instance_of(URI::Generic, @parser.parse("foo/bar"))
+  end
+
+  def test_parse_relative_reference_keeps_path
+    assert_equal("foo/bar", @parser.parse("foo/bar").path)
+  end
+
+  # --- join: base URL resolution (delegates to Generic#merge) ---
+
+  def test_join_resolves_relative_path_against_base
+    result = @parser.join("http://example.com/a/b", "c")
+    assert_equal("http://example.com/a/c", result.to_s)
+  end
+
+  def test_join_resolves_absolute_path_against_base
+    result = @parser.join("http://example.com/a/b", "/c")
+    assert_equal("http://example.com/c", result.to_s)
+  end
+
+  def test_join_resolves_network_path_reference_against_base
+    result = @parser.join("http://example.com/a/b", "//example.org/c")
+    assert_equal("http://example.org/c", result.to_s)
+  end
+
+  def test_join_resolves_query_only_reference_and_keeps_base_path
+    result = @parser.join("http://example.com/a/b?x=1", "?y=2")
+    assert_equal("http://example.com/a/b?y=2", result.to_s)
+  end
+
+  def test_join_resolves_fragment_only_reference_and_keeps_base_query
+    result = @parser.join("http://example.com/a/b?x=1", "#frag")
+    assert_equal("http://example.com/a/b?x=1#frag", result.to_s)
+  end
+
+  def test_join_resolves_dot_dot_segments_against_base
+    result = @parser.join("http://example.com/a/b/c", "../d")
+    assert_equal("http://example.com/a/d", result.to_s)
   end
 end

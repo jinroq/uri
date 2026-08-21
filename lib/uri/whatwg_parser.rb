@@ -35,17 +35,37 @@ module URI
 
     # Returns [scheme, userinfo, host, port, registry, path, opaque, query, fragment],
     # matching the contract of URI::RFC3986_Parser#split. registry and opaque
-    # are always nil, since Phase 1 only handles absolute http/https URLs.
+    # are always nil.
+    #
+    # An absolute http/https URL (with scheme) is parsed in full, with a
+    # missing path normalized to "/". A scheme-less input is parsed as a
+    # relative reference (network-path, absolute-path, relative-path, or
+    # empty) with userinfo/host/port unset unless it is a network-path
+    # reference ("//host/..."); its path is left as "" when missing, since
+    # Generic#merge treats an empty rel.path as "no path given"
+    # (RFC2396 5.2, step 2). Relative references are meant to be fed to
+    # Generic#merge (via #parse / #join) to resolve against a base URL;
+    # they are not resolvable on their own.
     def split(input)
       before_fragment, fragment = parse_fragment(input)
-      scheme, after_scheme = parse_scheme(before_fragment)
-      authority = after_scheme.delete_prefix('//')
-      username, password, host_port_path = parse_userinfo(authority)
-      host_port, path_and_query = split_host_port_and_path(host_port_path)
-      host, port = parse_host_port(host_port, scheme)
-      path, query = parse_query(path_and_query)
+      scheme, rest = parse_scheme(before_fragment)
 
-      [scheme, join_userinfo(username, password), host, port, nil, path, nil, query, fragment]
+      if rest.start_with?('//')
+        authority = rest.delete_prefix('//')
+        username, password, host_port_path = parse_userinfo(authority)
+        empty_path_default = scheme ? '/' : ''
+        host_port, path_and_query = split_host_port_and_path(host_port_path, empty_path_default)
+        host, port = parse_host_port(host_port, scheme)
+        path, query = parse_query(path_and_query)
+        userinfo = join_userinfo(username, password)
+      else
+        host = nil
+        port = nil
+        userinfo = nil
+        path, query = parse_query(rest)
+      end
+
+      [scheme, userinfo, host, port, nil, path, nil, query, fragment]
     end
 
     private
@@ -57,12 +77,12 @@ module URI
       [before, fragment]
     end
 
-    # scheme start state / scheme state.
+    # scheme start state / scheme state. Returns [nil, before_fragment]
+    # unchanged when no valid scheme prefix is present, so the caller can
+    # fall back to relative-reference parsing.
     def parse_scheme(before_fragment)
       scheme, sep, rest = before_fragment.partition(':')
-      if sep.empty? || !SCHEME_PATTERN.match?(scheme)
-        raise InvalidURIError, "bad URI (missing scheme): #{before_fragment}"
-      end
+      return [nil, before_fragment] if sep.empty? || !SCHEME_PATTERN.match?(scheme)
 
       scheme = scheme.downcase
       unless SPECIAL_SCHEME_DEFAULT_PORTS.key?(scheme)
@@ -89,14 +109,14 @@ module URI
       "#{username}:#{password}"
     end
 
-    # splits authority-rest into "host:port" and a "/"-prefixed path+query,
-    # normalizing a missing path to "/".
-    def split_host_port_and_path(host_port_path)
+    # splits authority-rest into "host:port" and a path+query, using
+    # empty_path_default when no "/" (and thus no path) is present.
+    def split_host_port_and_path(host_port_path, empty_path_default)
       slash_index = host_port_path.index('/')
       if slash_index
         [host_port_path[0...slash_index], host_port_path[slash_index..-1]]
       else
-        [host_port_path, '/']
+        [host_port_path, empty_path_default]
       end
     end
 
