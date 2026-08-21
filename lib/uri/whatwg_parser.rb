@@ -114,6 +114,28 @@ module URI
     PATH_PERCENT_ENCODE_SET = (C0_CONTROL_PERCENT_ENCODE_SET + %q{ "#<>?^`{}}.bytes).freeze
     USERINFO_PERCENT_ENCODE_SET = (PATH_PERCENT_ENCODE_SET + '/:;=@[\]|'.bytes).freeze
 
+    # The full #percent_encode gsub pattern for encode_set: an existing
+    # "%XX" escape, or one or more consecutive ASCII bytes NOT in
+    # encode_set (0x21-0x7E only; 0x20 and below/0x7F+ are always
+    # unsafe; "%" (0x25) is excluded even though no encode_set lists it,
+    # so an existing escape or a lone "%" is always seen on its own), or
+    # (falling through to ".") a single byte that needs encoding.
+    # Built once per encode_set and frozen as a constant below --
+    # interpolating a sub-pattern into a regexp literal on every call
+    # would recompile it every time, which measurably matters here since
+    # #percent_encode runs on every #split call.
+    def self.percent_encode_pattern(encode_set)
+      safe_bytes = (0x21..0x7E).reject { |b| encode_set.include?(b) || b == 0x25 }
+      safe_run = safe_bytes.map { |b| Regexp.escape(b.chr) }.join
+      Regexp.new("%[0-9A-Fa-f]{2}|[#{safe_run}]+|.", Regexp::MULTILINE)
+    end
+    private_class_method :percent_encode_pattern
+
+    FRAGMENT_ENCODE_PATTERN = percent_encode_pattern(FRAGMENT_PERCENT_ENCODE_SET).freeze
+    QUERY_ENCODE_PATTERN = percent_encode_pattern(QUERY_PERCENT_ENCODE_SET).freeze
+    PATH_ENCODE_PATTERN = percent_encode_pattern(PATH_PERCENT_ENCODE_SET).freeze
+    USERINFO_ENCODE_PATTERN = percent_encode_pattern(USERINFO_PERCENT_ENCODE_SET).freeze
+
     def parse(uri) # :nodoc:
       URI.for(*self.split(uri), self)
     end
@@ -148,7 +170,7 @@ module URI
     # (including any "?query"), and userinfo/host/port/path/query are nil.
     def split(input)
       before_fragment, fragment = parse_fragment(input)
-      fragment = percent_encode(fragment, FRAGMENT_PERCENT_ENCODE_SET) if fragment
+      fragment = percent_encode(fragment, FRAGMENT_PERCENT_ENCODE_SET, FRAGMENT_ENCODE_PATTERN) if fragment
       scheme, rest = parse_scheme(before_fragment)
 
       if scheme && !SPECIAL_SCHEME_DEFAULT_PORTS.key?(scheme)
@@ -164,19 +186,19 @@ module URI
         path_and_query = empty_path_default if path_and_query.empty?
         host, port = parse_host_port(host_port, scheme)
         path, query = parse_query(path_and_query)
-        path = percent_encode(path, PATH_PERCENT_ENCODE_SET)
+        path = percent_encode(path, PATH_PERCENT_ENCODE_SET, PATH_ENCODE_PATTERN)
         path = normalize_dot_segments(path) if scheme
-        query = percent_encode(query, QUERY_PERCENT_ENCODE_SET) if query
-        username = percent_encode(username, USERINFO_PERCENT_ENCODE_SET) if username
-        password = percent_encode(password, USERINFO_PERCENT_ENCODE_SET) if password
+        query = percent_encode(query, QUERY_PERCENT_ENCODE_SET, QUERY_ENCODE_PATTERN) if query
+        username = percent_encode(username, USERINFO_PERCENT_ENCODE_SET, USERINFO_ENCODE_PATTERN) if username
+        password = percent_encode(password, USERINFO_PERCENT_ENCODE_SET, USERINFO_ENCODE_PATTERN) if password
         userinfo = join_userinfo(username, password)
       else
         host = nil
         port = nil
         userinfo = nil
         path, query = parse_query(rest)
-        path = percent_encode(path, PATH_PERCENT_ENCODE_SET)
-        query = percent_encode(query, QUERY_PERCENT_ENCODE_SET) if query
+        path = percent_encode(path, PATH_PERCENT_ENCODE_SET, PATH_ENCODE_PATTERN)
+        query = percent_encode(query, QUERY_PERCENT_ENCODE_SET, QUERY_ENCODE_PATTERN) if query
       end
 
       [scheme, userinfo, host, port, nil, path, nil, query, fragment]
@@ -236,10 +258,19 @@ module URI
     # always emits uppercase hex digits); a lone "%" not followed by two
     # hex digits is encoded to "%25" rather than left bare, since
     # Generic#query=/#fragment= raise on an invalid escape.
-    def percent_encode(str, encode_set)
-      str.gsub(/%[0-9A-Fa-f]{2}|./mu) do |match|
-        if match.start_with?('%') && match.length == 3
+    #
+    # pattern is this encode_set's precomputed #self.percent_encode_pattern
+    # (e.g. PATH_ENCODE_PATTERN), which lets gsub consume a whole run of
+    # encode_set-free ASCII bytes in a single match/block call, instead
+    # of invoking the block once per character -- the common case for
+    # real-world URLs, where most of a component's bytes need no
+    # encoding at all.
+    def percent_encode(str, encode_set, pattern)
+      str.gsub(pattern) do |match|
+        if match.length == 3 && match.start_with?('%')
           match.upcase
+        elsif match.length > 1
+          match
         elsif match == '%'
           '%25'
         elsif match.ord > 0x7E || encode_set.include?(match.ord)
